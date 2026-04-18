@@ -166,8 +166,3 @@ Desenvolvido por:
 * Persistência em banco de dados
 * Sistema real de notificações
 * Melhoria na performance e otimizações
-
-
-## Considerações Finais
-
-O frontend do Daery demonstra a viabilidade da arquitetura proposta e valida a experiência do usuário antes da implementação completa do backend, garantindo uma base sólida para evolução do sistema.
