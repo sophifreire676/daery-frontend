@@ -7,10 +7,6 @@ interface GeolocationResult {
   coords: [number, number] | null
 }
 
-/**
- * Hook que solicita e rastreia a geolocalização do dispositivo.
- * Segue o fluxo descrito nas seções 16.1.3 e 16.1.4 do documento.
- */
 export function useGeolocation(): GeolocationResult {
   const [status, setStatus] = useState<GeoStatus>('idle')
   const [coords, setCoords] = useState<[number, number] | null>(null)

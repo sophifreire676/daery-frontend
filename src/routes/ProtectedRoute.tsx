@@ -8,20 +8,6 @@ interface ProtectedRouteProps {
   redirectTo?: string
 }
 
-/**
- * Guarda de rota baseada em autenticação e role.
- *
- * - Sem usuário autenticado → redireciona para /login
- * - Com usuário autenticado mas role insuficiente → redireciona para /home-public
- * - OK → renderiza children
- *
- * Uso no App.tsx:
- *   <Route path="/home-professional" element={
- *     <ProtectedRoute requiredRole="researcher">
- *       <HomeProfessional />
- *     </ProtectedRoute>
- *   } />
- */
 export default function ProtectedRoute({
   children,
   requiredRole,
