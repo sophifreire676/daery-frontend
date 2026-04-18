@@ -157,12 +157,3 @@ Desenvolvido por:
 * O projeto atualmente utiliza dados simulados (mock)
 * A integração com backend será implementada nas próximas fases
 * Estrutura preparada para escalabilidade
-
-
-## Próximos Passos
-
-* Integração com API backend
-* Autenticação real com JWT
-* Persistência em banco de dados
-* Sistema real de notificações
-* Melhoria na performance e otimizações
