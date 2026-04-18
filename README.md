@@ -136,9 +136,9 @@ O sistema foi desenvolvido com foco em:
 
 | Etapa      | Status               |
 | ---------- | -------------------- |
-| Frontend   | ✅ Concluído          |
-| Backend    | ⏳ Em desenvolvimento |
-| Integração | ⏳ Pendente           |
+| Frontend   |  Concluído          |
+| Backend    |  Em desenvolvimento |
+| Integração |  Pendente           |
 
 
 ## Contexto Acadêmico
