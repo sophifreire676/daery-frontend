@@ -96,7 +96,7 @@ São tratados como **Pesquisador**
 ### 1. Clone o repositório
 
 ```bash
-git clone https://github.com/seu-usuario/daery-frontend.git
+git clone https://github.com/sophifreire676/daery-frontend.git
 ```
 
 ### 2. Acesse a pasta
