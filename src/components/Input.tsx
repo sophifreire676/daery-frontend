@@ -1,4 +1,4 @@
-import React, { InputHTMLAttributes, forwardRef } from 'react'
+import React, { InputHTMLAttributes, forwardRef, useId } from 'react'
 
 interface InputProps extends InputHTMLAttributes<HTMLInputElement> {
   label?: string
@@ -8,17 +8,27 @@ interface InputProps extends InputHTMLAttributes<HTMLInputElement> {
 }
 
 const Input = forwardRef<HTMLInputElement, InputProps>(
-  ({ label, hint, error, rightElement, className = '', ...props }, ref) => {
+  ({ label, hint, error, rightElement, className = '', id, ...props }, ref) => {
+    // Associa rótulo, dica e erro ao campo para leitores de tela.
+    const autoId = useId()
+    const inputId = id ?? props.name ?? autoId
+    const hintId = `${inputId}-dica`
+    const errorId = `${inputId}-erro`
+    const describedBy = error ? errorId : hint ? hintId : undefined
+
     return (
       <div className="w-full">
         {label && (
-          <label className="block text-sm font-medium text-emerald-900 mb-1.5">
+          <label htmlFor={inputId} className="block text-sm font-medium text-emerald-900 mb-1.5">
             {label}
           </label>
         )}
         <div className="relative">
           <input
             ref={ref}
+            id={inputId}
+            aria-invalid={error ? true : undefined}
+            aria-describedby={describedBy}
             className={`
               w-full px-3.5 py-2.5 text-sm rounded-lg border border-slate-200
               bg-white text-slate-800 placeholder:text-slate-400
@@ -38,10 +48,10 @@ const Input = forwardRef<HTMLInputElement, InputProps>(
           )}
         </div>
         {hint && !error && (
-          <p className="mt-1.5 text-xs text-slate-500">{hint}</p>
+          <p id={hintId} className="mt-1.5 text-xs text-slate-500">{hint}</p>
         )}
         {error && (
-          <p className="mt-1.5 text-xs text-red-500">{error}</p>
+          <p id={errorId} className="mt-1.5 text-xs text-red-500">{error}</p>
         )}
       </div>
     )

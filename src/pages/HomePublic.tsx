@@ -1,151 +1,26 @@
-import React, { useState, useEffect, useRef } from 'react'
-import RealMap from '../components/RealMap'
+import React, { useMemo, useState } from 'react'
+import RealMap, { MapViewMode } from '../components/RealMap'
+import AlertList from '../components/AlertList'
+import DataStatus from '../components/DataStatus'
+import { useAlerts, useCaseSummary } from '../hooks/useApiData'
+import {
+  SEVERITY_COLOR,
+  SEVERITY_DESCRIPTION,
+  SEVERITY_LABEL,
+  SEVERITY_ORDER,
+  SeverityKey,
+  countBySeverity,
+  filterOutbreaks,
+  formatIsoDate,
+  latestWeek,
+  sortAlertsByRelevance,
+  toOutbreak,
+} from '../utils/outbreaks'
+import { periodError, toSummaryPeriod } from '../utils/period'
 import { useNavigate } from 'react-router-dom'
 import { useGeolocation } from '../hooks/useGeolocation'
-
-interface Outbreak {
-  id: number
-  city: string
-  state: string
-  disease: string
-  cases: number
-  severity: 'critical' | 'high' | 'medium' | 'low'
-  lat: number
-  lng: number
-  lastUpdate: string
-}
-
-const PUBLIC_OUTBREAKS = [
-  {
-    id: 1,
-    city: 'São Paulo',
-    state: 'SP',
-    disease: 'Dengue',
-    cases: 1284,
-    severity: 'critical' as const,
-    lat: -23.5505,
-    lng: -46.6333,
-    lastUpdate: '2 horas atrás',
-  },
-  {
-    id: 2,
-    city: 'Rio de Janeiro',
-    state: 'RJ',
-    disease: 'Chikungunya',
-    cases: 432,
-    severity: 'high' as const,
-    lat: -22.9068,
-    lng: -43.1729,
-    lastUpdate: '1 hora atrás',
-  },
-  {
-    id: 3,
-    city: 'Brasília',
-    state: 'DF',
-    disease: 'Dengue',
-    cases: 215,
-    severity: 'medium' as const,
-    lat: -15.7942,
-    lng: -47.8822,
-    lastUpdate: '3 horas atrás',
-  },
-]
-
-const SEVERITY_COLOR: Record<string, string> = {
-  critical: '#ef4444',
-  high:     '#f97316',
-  medium:   '#eab308',
-  low:      '#22c55e',
-}
-
-const SEVERITY_LABEL: Record<string, string> = {
-  critical: 'Crítico',
-  high:     'Alto',
-  medium:   'Médio',
-  low:      'Baixo',
-}
-
-
-
-
-type Ripple = { x: number; y: number; r: number; alpha: number; speed: number; color: string }
-
-function EpiMap({ outbreaks }: { outbreaks: Outbreak[] }) {
-  const canvasRef = useRef<HTMLCanvasElement>(null)
-  const animRef   = useRef<number>(0)
-  const ripplesRef = useRef<Ripple[]>([])
-
-  useEffect(() => {
-    const canvas = canvasRef.current
-    if (!canvas) return
-    const ctx = canvas.getContext('2d')!
-
-    const addRipple = () => {
-      const ob = outbreaks[Math.floor(Math.random() * outbreaks.length)]
-      ripplesRef.current.push({
-        x: ob.lat, y: ob.lng,
-        r: 0, alpha: 0.8, speed: 0.5 + Math.random() * 0.4,
-        color: SEVERITY_COLOR[ob.severity],
-      })
-    }
-    const interval = setInterval(addRipple, 500)
-
-    const draw = () => {
-      canvas.width  = canvas.offsetWidth
-      canvas.height = canvas.offsetHeight
-      const w = canvas.width, h = canvas.height
-
-      ctx.fillStyle = '#071a12'
-      ctx.fillRect(0, 0, w, h)
-
-      // Grid
-      ctx.strokeStyle = 'rgba(13,158,117,0.05)'
-      ctx.lineWidth = 0.5
-      for (let x = 0; x < w; x += 28) {
-        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke()
-      }
-      for (let y = 0; y < h; y += 28) {
-        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke()
-      }
-
-      outbreaks.forEach(ob => {
-        const px = ob.lat * w, py = ob.lng * h
-        const color = SEVERITY_COLOR[ob.severity]
-       
-        const grd = ctx.createRadialGradient(px, py, 0, px, py, 18)
-        grd.addColorStop(0, color + '40')
-        grd.addColorStop(1, 'transparent')
-        ctx.fillStyle = grd
-        ctx.beginPath(); ctx.arc(px, py, 18, 0, Math.PI * 2); ctx.fill()
-      
-        ctx.beginPath()
-        ctx.arc(px, py, 5, 0, Math.PI * 2)
-        ctx.fillStyle = color
-        ctx.fill()
-      })
-
-      const ripples = ripplesRef.current
-      for (let i = ripples.length - 1; i >= 0; i--) {
-        const rp = ripples[i]
-        ctx.beginPath()
-        ctx.arc(rp.x * w, rp.y * h, rp.r, 0, Math.PI * 2)
-        ctx.strokeStyle = rp.color + Math.round(rp.alpha * 255).toString(16).padStart(2,'0')
-        ctx.lineWidth = 1.5
-        ctx.stroke()
-        rp.r     += rp.speed
-        rp.alpha -= 0.014
-        if (rp.alpha <= 0) ripples.splice(i, 1)
-      }
-
-      animRef.current = requestAnimationFrame(draw)
-    }
-    draw()
-    return () => { clearInterval(interval); cancelAnimationFrame(animRef.current) }
-  }, [outbreaks])
-
-  return <canvas ref={canvasRef} className="absolute inset-0 w-full h-full" />
-}
-
+import { useAuth } from '../context/AuthContext'
+import { verificationLabel } from '../utils/roles'
 
 function DaeryLogo() {
   return (
@@ -166,27 +41,44 @@ function DaeryLogo() {
 
 export default function HomePublic() {
   const navigate = useNavigate()
+  const { user, isAuthenticated, logout } = useAuth()
   const onLogin = () => navigate('/login')
   const onRegister = () => navigate('/register')
-  const [activeFilter, setActiveFilter] = useState<'all' | 'critical' | 'high' | 'medium' | 'low'>('all')
+  // Reportar exige perfil profissional aprovado: o visitante entra e volta para a Home 2
+  // com o formulário de notificação já aberto (se o perfil puder reportar).
+  const onReportCase = () => navigate('/login', { state: { from: '/home-professional', openReport: true } })
+  const onLogout = () => logout()
+  const pendingNotice = user ? verificationLabel(user.verificationStatus, user.requestedRole) : null
+  const [activeFilter, setActiveFilter] = useState<SeverityKey | 'all'>('all')
   const [searchQuery, setSearchQuery]   = useState('')
-  const [viewMode, setViewMode]         = useState<'markers' | 'heatmap'>('markers')
+  const [viewMode, setViewMode]         = useState<MapViewMode>('markers')
+  const [startDate, setStartDate]       = useState('')
+  const [endDate, setEndDate]           = useState('')
 
   const { status: geoStatus, coords: userCoords } = useGeolocation()
-  const totalCases = PUBLIC_OUTBREAKS.reduce((acc, o) => acc + o.cases, 0)
-  const criticalCount = PUBLIC_OUTBREAKS.filter(o => o.severity === 'critical').length
-  const diseaseCount  = new Set(PUBLIC_OUTBREAKS.map(o => o.disease)).size
 
-  const filtered = PUBLIC_OUTBREAKS.filter(o => {
-    const matchFilter = activeFilter === 'all' || o.severity === activeFilter
-    const matchSearch = searchQuery === '' ||
-      o.city.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      o.disease.toLowerCase().includes(searchQuery.toLowerCase())
-    return matchFilter && matchSearch
-  })
+  // Período e doença vão para a API; severidade e busca filtram localmente.
+  const dateError = periodError({ startDate, endDate })
+  const summary = useCaseSummary(toSummaryPeriod({ startDate, endDate }), !dateError)
+  const alertsState = useAlerts()
 
-  const now = new Date()
-  const timeStr = now.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
+  const outbreaks = useMemo(() => (summary.data?.items ?? []).map(toOutbreak), [summary.data])
+  const filtered = useMemo(
+    () => filterOutbreaks(outbreaks, { severity: activeFilter, search: searchQuery }),
+    [outbreaks, activeFilter, searchQuery]
+  )
+  const severityCounts = countBySeverity(outbreaks)
+  const alerts = useMemo(
+    () => sortAlertsByRelevance(alertsState.data ?? [], userCoords ?? null),
+    [alertsState.data, userCoords]
+  )
+
+  const totalCases    = outbreaks.reduce((acc, o) => acc + o.cases, 0)
+  const criticalCount = severityCounts.critical
+  const diseaseCount  = new Set(outbreaks.filter(o => o.cases > 0).map(o => o.disease)).size
+  const dataUntil     = latestWeek(outbreaks)
+  const hasDemoData   = outbreaks.some(o => o.includesDemoData)
+  const offMap        = filtered.filter(o => o.coordinates === null).length
 
   return (
     <div className="flex flex-col min-h-screen bg-slate-50 font-dm">
@@ -217,29 +109,70 @@ export default function HomePublic() {
                 <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/>
                 <path d="M12 9v4"/><path d="M12 17h.01"/>
               </svg>
-              {criticalCount} surto{criticalCount > 1 ? 's' : ''} crítico{criticalCount > 1 ? 's' : ''}
+              {criticalCount} situação{criticalCount > 1 ? 'ões' : ''} crítica{criticalCount > 1 ? 's' : ''}
             </div>
           )}
 
-          <button
-            onClick={onLogin}
-            className="flex items-center gap-2 bg-teal-600 hover:bg-teal-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors"
-          >
-            <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-              <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/>
-              <polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/>
-            </svg>
-            Entrar
-          </button>
+{isAuthenticated && user ? (
+            <>
+              {user.isProfessional && (
+                <button
+                  onClick={() => navigate('/home-professional')}
+                  className="hidden sm:inline-flex border border-white/20 hover:border-teal-400/50 text-white hover:text-teal-300 text-sm font-medium px-4 py-2 rounded-lg transition-colors"
+                >
+                  Área profissional
+                </button>
+              )}
+              <button
+                onClick={() => navigate('/profile')}
+                className="flex items-center gap-2 px-3 py-2 rounded-lg bg-white/10 hover:bg-white/20 text-white text-sm transition-colors"
+                title="Ir para o perfil"
+              >
+                <span className="w-6 h-6 bg-teal-600 rounded-full flex items-center justify-center text-[11px] font-bold font-sora" aria-hidden="true">
+                  {user.initials}
+                </span>
+                <span className="hidden sm:inline">{user.name.split(' ')[0]}</span>
+              </button>
+              <button
+                onClick={onLogout}
+                className="text-white/70 hover:text-white text-sm px-2 py-2 transition-colors"
+              >
+                Sair
+              </button>
+            </>
+          ) : (
+            <>
+                    <button
+              onClick={onLogin}
+              className="flex items-center gap-2 bg-teal-600 hover:bg-teal-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors"
+            >
+              <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/>
+                <polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/>
+              </svg>
+              Entrar
+            </button>
 
-          <button
-            onClick={onRegister}
-            className="border border-white/20 hover:border-teal-400/50 text-white hover:text-teal-300 text-sm font-medium px-4 py-2 rounded-lg transition-colors"
-          >
-            + Reportar caso
-          </button>
+            <button
+              onClick={onReportCase}
+              title="Para profissionais de saúde e instituições"
+              className="border border-white/20 hover:border-teal-400/50 text-white hover:text-teal-300 text-sm font-medium px-4 py-2 rounded-lg transition-colors"
+            >
+              + Reportar caso
+            </button>
+            </>
+          )}
         </div>
       </nav>
+
+      {pendingNotice && (
+        <div role="status" className="bg-amber-50 border-b border-amber-200 px-6 py-2.5 text-sm text-amber-800">
+          <strong>{pendingNotice}.</strong>{' '}
+          {user?.verificationStatus === 'PENDING'
+            ? 'Enquanto a equipe do Daery confere os dados, você usa o Daery como cidadão.'
+            : 'Sua conta continua ativa como cidadão. Em caso de dúvida, fale com a equipe do Daery.'}
+        </div>
+      )}
 
       {/* ── Geolocation status banner (seção 16.1.3 e 16.1.4) ── */}
       {(geoStatus === 'idle' || geoStatus === 'loading') && (
@@ -270,10 +203,10 @@ export default function HomePublic() {
       {/* ── Stats bar ── */}
       <div className="bg-white border-b border-slate-200 px-6 py-3 flex items-center gap-6 overflow-x-auto">
         {[
-          { label: 'Total de Casos',    value: totalCases.toLocaleString('pt-BR'), icon: '📊', iconColor: 'text-teal-500' },
-          { label: 'Doenças ativas',    value: diseaseCount, icon: '🦠', iconColor: 'text-emerald-500' },
-          { label: 'Surtos Críticos',   value: criticalCount, icon: '⚠️', iconColor: 'text-red-500' },
-          { label: 'Última Atualização', value: timeStr, icon: '🕐', iconColor: 'text-slate-400' },
+          { label: 'Casos no período',   value: summary.loading ? '…' : totalCases.toLocaleString('pt-BR') },
+          { label: 'Doenças com casos',  value: summary.loading ? '…' : diseaseCount },
+          { label: 'Situações críticas', value: summary.loading ? '…' : criticalCount },
+          { label: 'Dados até',          value: summary.loading ? '…' : dataUntil ? `semana de ${formatIsoDate(dataUntil)}` : '—' },
         ].map(stat => (
           <div key={stat.label} className="flex items-center gap-3 shrink-0 pr-6 border-r border-slate-100 last:border-0">
             <div className="flex flex-col">
@@ -303,17 +236,19 @@ export default function HomePublic() {
             <div className="mb-4">
               <p className="text-xs text-slate-500 mb-2 font-medium">Modo de Visualização</p>
               <div className="flex gap-2">
-                {(['markers', 'heatmap'] as const).map(mode => (
+                {(['markers', 'intensity'] as const).map(mode => (
                   <button
                     key={mode}
                     onClick={() => setViewMode(mode)}
+                    aria-pressed={viewMode === mode}
+                    title={mode === 'intensity' ? 'Tamanho do círculo proporcional ao número de casos' : 'Círculos do mesmo tamanho, cor pela severidade'}
                     className={`flex-1 py-1.5 text-xs font-medium rounded-md border transition-all ${
                       viewMode === mode
                         ? 'bg-teal-600 border-teal-600 text-white'
                         : 'border-slate-200 text-slate-600 hover:border-teal-300'
                     }`}
                   >
-                    {mode === 'markers' ? 'Marcadores' : 'Heatmap'}
+                    {mode === 'markers' ? 'Marcadores' : 'Intensidade'}
                   </button>
                 ))}
               </div>
@@ -323,10 +258,12 @@ export default function HomePublic() {
             <div className="mb-4">
               <p className="text-xs text-slate-500 mb-2 font-medium">Severidade</p>
               <div className="space-y-1.5">
-                {(['critical', 'high', 'medium', 'low'] as const).map(sev => (
+                {SEVERITY_ORDER.filter(sev => sev !== 'unknown' || severityCounts.unknown > 0).map(sev => (
                   <button
                     key={sev}
                     onClick={() => setActiveFilter(activeFilter === sev ? 'all' : sev)}
+                    aria-pressed={activeFilter === sev}
+                    title={SEVERITY_DESCRIPTION[sev]}
                     className={`w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-md text-xs transition-all ${
                       activeFilter === sev ? 'bg-slate-100 font-medium' : 'hover:bg-slate-50'
                     }`}
@@ -334,7 +271,7 @@ export default function HomePublic() {
                     <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: SEVERITY_COLOR[sev] }} />
                     <span className="text-slate-600">{SEVERITY_LABEL[sev]}</span>
                     <span className="ml-auto text-slate-400">
-                      {PUBLIC_OUTBREAKS.filter(o => o.severity === sev).length}
+                      {severityCounts[sev]}
                     </span>
                   </button>
                 ))}
@@ -346,18 +283,55 @@ export default function HomePublic() {
               <p className="text-xs text-slate-500 mb-2 font-medium">Período</p>
               <div className="space-y-2">
                 <div>
-                  <label className="text-xs text-slate-400">Data Inicial</label>
-                  <input type="date" className="w-full mt-1 text-xs border border-slate-200 rounded-md px-2.5 py-1.5 text-slate-600 focus:outline-none focus:border-teal-400" />
+                  <label htmlFor="pub-start" className="text-xs text-slate-400">Data inicial</label>
+                  <input
+                    id="pub-start"
+                    type="date"
+                    value={startDate}
+                    onChange={e => setStartDate(e.target.value)}
+                    className="w-full mt-1 text-xs border border-slate-200 rounded-md px-2.5 py-1.5 text-slate-600 focus:outline-none focus:border-teal-400"
+                  />
                 </div>
                 <div>
-                  <label className="text-xs text-slate-400">Data Final</label>
-                  <input type="date" className="w-full mt-1 text-xs border border-slate-200 rounded-md px-2.5 py-1.5 text-slate-600 focus:outline-none focus:border-teal-400" />
+                  <label htmlFor="pub-end" className="text-xs text-slate-400">Data final</label>
+                  <input
+                    id="pub-end"
+                    type="date"
+                    value={endDate}
+                    onChange={e => setEndDate(e.target.value)}
+                    className="w-full mt-1 text-xs border border-slate-200 rounded-md px-2.5 py-1.5 text-slate-600 focus:outline-none focus:border-teal-400"
+                  />
                 </div>
+                {dateError ? (
+                  <p role="alert" className="text-xs text-red-600">{dateError}</p>
+                ) : (
+                  <p className="text-[11px] text-slate-400">Sem datas, mostra as últimas 8 semanas.</p>
+                )}
               </div>
             </div>
           </div>
 
+          {/* Alertas preventivos (RF-004): públicos, os mais próximos do usuário primeiro */}
+          <div className="p-4 border-t border-slate-100 overflow-y-auto">
+            <h2 className="font-sora font-semibold text-slate-700 text-sm mb-2">Alertas ativos</h2>
+            {alerts.length > 0 ? (
+              <AlertList alerts={alerts} maxItems={isAuthenticated ? undefined : 3} />
+            ) : (
+              <DataStatus
+                loading={alertsState.loading}
+                error={alertsState.error}
+                isEmpty={!alertsState.loading && !alertsState.error}
+                onRetry={alertsState.reload}
+                emptyText="Nenhum alerta ativo no momento."
+              />
+            )}
+            {!isAuthenticated && alerts.length > 3 && (
+              <p className="text-[11px] text-slate-500 mt-2">Entre para ver todos os {alerts.length} alertas.</p>
+            )}
+          </div>
+
           {/* CTA for unauthenticated */}
+          {!isAuthenticated && (
           <div className="p-4 mt-auto border-t border-slate-100 bg-gradient-to-br from-teal-50 to-emerald-50">
             <div className="flex items-start gap-2.5 mb-3">
               <div className="w-8 h-8 bg-teal-600 rounded-lg flex items-center justify-center shrink-0">
@@ -368,7 +342,7 @@ export default function HomePublic() {
               </div>
               <div>
                 <p className="text-sm font-semibold text-slate-700 font-sora">Acesso completo</p>
-                <p className="text-xs text-slate-500 mt-0.5">Filtros avançados, alertas e exportação de dados</p>
+                <p className="text-xs text-slate-500 mt-0.5">Filtros avançados e alertas para profissionais; exportação de dados para pesquisadores</p>
               </div>
             </div>
             <button
@@ -384,6 +358,7 @@ export default function HomePublic() {
               Já tenho uma conta
             </button>
           </div>
+          )}
         </aside>
 
         {/* ── Map + List ── */}
@@ -392,25 +367,36 @@ export default function HomePublic() {
           {/* Map */}
           <div className="relative flex-1 bg-[#071a12] overflow-hidden h-[420px] w-full">
             <RealMap
-              outbreaks={PUBLIC_OUTBREAKS.map(o => ({ ...o, coordinates: [o.lat, o.lng] as [number, number] }))}
+              outbreaks={filtered}
+              mode={viewMode}
               center={userCoords ?? undefined}
               zoom={userCoords ? 8 : 4}
             />
 
+            <DataStatus
+              variant="overlay"
+              loading={summary.loading}
+              error={dateError ? null : summary.error}
+              isEmpty={!dateError && !summary.loading && !summary.error && filtered.length === 0}
+              onRetry={summary.reload}
+              emptyText={outbreaks.length === 0 ? 'Ainda não há dados para este período.' : 'Nenhum resultado para os filtros escolhidos.'}
+            />
+
             {/* Map label */}
-            <div className="absolute top-3 left-3 bg-black/60 backdrop-blur-sm text-white px-3 py-1.5 rounded-lg text-sm font-sora font-semibold z-[500]">
+            <div className="absolute top-3 left-14 bg-black/60 backdrop-blur-sm text-white px-3 py-1.5 rounded-lg text-sm font-sora font-semibold z-[500]">
               Mapa de Surtos Epidemiológicos
             </div>
 
-            {/* Map legend */}
-            <div className="absolute bottom-3 left-3 text-white/70 text-xs bg-black/40 px-2.5 py-1 rounded-lg z-[500]">
-              {PUBLIC_OUTBREAKS.length} surtos encontrados
+            {/* Contagem e aviso de dados fictícios */}
+            <div className="absolute bottom-3 left-3 text-white text-xs bg-black/60 px-2.5 py-1 rounded-lg z-[500]" aria-live="polite">
+              {filtered.length} {filtered.length === 1 ? 'registro' : 'registros'} · {filtered.reduce((a, o) => a + o.cases, 0).toLocaleString('pt-BR')} casos
+              {offMap > 0 && ` · ${offMap} sem localização no mapa`}
             </div>
-
-            {/* Count badge */}
-            <div className="absolute bottom-3 left-3 text-white/70 text-xs bg-black/40 px-2.5 py-1 rounded-lg">
-              {filtered.length} surtos encontrados &nbsp;·&nbsp; {filtered.reduce((a, o) => a + o.cases, 0).toLocaleString('pt-BR')} casos totais
-            </div>
+            {hasDemoData && (
+              <div className="absolute top-3 right-3 bg-amber-100 text-amber-900 text-xs px-2.5 py-1 rounded-lg z-[500]">
+                Inclui dados fictícios de demonstração
+              </div>
+            )}
           </div>
 
           {/* Outbreak list */}
@@ -425,7 +411,7 @@ export default function HomePublic() {
                   </div>
                   <p className="text-teal-600 text-xs font-medium">{ob.disease}</p>
                   <p className="text-slate-700 text-lg font-bold font-sora leading-tight">{ob.cases.toLocaleString('pt-BR')}</p>
-                  <p className="text-slate-400 text-[11px]">casos · {ob.lastUpdate}</p>
+                  <p className="text-slate-400 text-[11px]">casos · semana de {formatIsoDate(ob.latestWeekStart)}</p>
                   <span className="inline-block mt-auto text-[10px] px-1.5 py-0.5 rounded font-medium"
                     style={{ background: SEVERITY_COLOR[ob.severity] + '20', color: SEVERITY_COLOR[ob.severity] }}>
                     {SEVERITY_LABEL[ob.severity]}

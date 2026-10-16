@@ -1,8 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react'
-import { useNavigate, Link } from 'react-router-dom'
+import { useNavigate, Link, useLocation } from 'react-router-dom'
 import Input from '../components/Input'
 import Button from '../components/Button'
 import { useAuth } from '../context/AuthContext'
+import { friendlyError } from '../utils/errorMessages'
+import { homePathFor } from '../utils/roles'
 
 interface LoginForm { email: string; password: string }
 interface LoginErrors { email?: string; password?: string }
@@ -13,18 +15,6 @@ function validate(form: LoginForm): LoginErrors {
   else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email)) errors.email = 'Email inválido'
   if (!form.password) errors.password = 'Senha obrigatória'
   return errors
-}
-
-function resolveRoleByEmail(email: string) {
-  const normalizedEmail = email.toLowerCase()
-  return (
-    normalizedEmail.includes('pesquisador') ||
-    normalizedEmail.includes('researcher') ||
-    normalizedEmail.includes('medic') ||
-    normalizedEmail.includes('dr.')
-  )
-    ? 'researcher'
-    : 'public'
 }
 
 const MAP_DOTS = [
@@ -41,6 +31,7 @@ type Ripple = { x: number; y: number; r: number; alpha: number; speed: number }
 
 export default function Login() {
   const navigate = useNavigate()
+  const location = useLocation()
   const { login, isLoading } = useAuth()
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const animRef = useRef<number>(0)
@@ -53,7 +44,7 @@ export default function Login() {
 
   const showToast = (msg: string, type: 'success' | 'error' = 'success') => {
     setToast({ msg, type })
-    setTimeout(() => setToast(null), 3000)
+    setTimeout(() => setToast(null), 5000)
   }
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -72,12 +63,14 @@ export default function Login() {
     }
 
     try {
-      const resolvedRole = resolveRoleByEmail(form.email)
-      await login(form.email, form.password)
-      showToast('Login realizado com sucesso!')
-      navigate(resolvedRole === 'researcher' ? '/home-professional' : '/home-public', { replace: true })
-    } catch {
-      showToast('Credenciais inválidas. Tente novamente.', 'error')
+      const user = await login(form.email, form.password)
+      // Volta para a página protegida que pediu o login, se houver; senão, para a Home do perfil.
+      const { from, openReport } = (location.state as { from?: string; openReport?: boolean } | null) ?? {}
+      const target = from && (from !== '/home-professional' || user.isProfessional) ? from : homePathFor(user.role)
+      // "Reportar caso" na Home pública: a Home 2 abre o formulário se o perfil puder reportar.
+      navigate(target, { replace: true, state: openReport && target === '/home-professional' ? { openReport: true } : null })
+    } catch (error) {
+      showToast(friendlyError(error), 'error')
     }
   }
 
@@ -231,7 +224,8 @@ export default function Login() {
                     type="button"
                     onClick={() => setShowPass(p => !p)}
                     className="text-slate-400 hover:text-slate-600 transition-colors"
-                    tabIndex={-1}
+                    aria-label={showPass ? 'Ocultar senha' : 'Mostrar senha'}
+                    aria-pressed={showPass}
                   >
                     {showPass ? (
                       <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
@@ -269,7 +263,10 @@ export default function Login() {
       </div>
 
       {toast && (
-        <div className={`fixed bottom-6 right-6 px-5 py-3.5 rounded-xl text-sm shadow-xl z-50 text-white ${toast.type === 'error' ? 'bg-red-600' : 'bg-[#0B2D2A]'}`}>
+        <div
+          role={toast.type === 'error' ? 'alert' : 'status'}
+          className={`fixed bottom-6 right-6 px-5 py-3.5 rounded-xl text-sm shadow-xl z-50 text-white ${toast.type === 'error' ? 'bg-red-600' : 'bg-[#0B2D2A]'}`}
+        >
           {toast.type === 'error' ? '✕' : '✓'} {toast.msg}
         </div>
       )}

@@ -1,144 +1,161 @@
 // Camada de comunicação com a API REST do Daery.
-// Quando o backend estiver disponível, configurar a BASE_URL com a URL real.
-//
-// Não usa axios porque a dependência não está instalada.
-// Implementa o mesmo contrato (instância com baseURL + interceptor de token)
-// usando fetch nativo + wrapper tipado.
-// Para migrar para axios quando disponível: substituir fetchAPI por axios.create(...)
-// e configurar axios.interceptors.request.use(config => { config.headers.Authorization = ... })
+// Usa fetch nativo (decisão D10): o wrapper faz o papel do interceptor do Axios,
+// injetando o token e padronizando os erros.
+import type {
+  Alert,
+  AlertFilters,
+  ApiErrorBody,
+  ApiUser,
+  AuthResponse,
+  CaseNotification,
+  CaseNotificationPayload,
+  Disease,
+  MeResponse,
+  RegisterPayload,
+  Region,
+  SummaryFilters,
+  SummaryResponse,
+} from '../types/api'
+import { getToken } from './authStorage'
 
-const BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:3000/api/v1'
+export const BASE_URL: string = (import.meta.env.VITE_API_URL ?? 'http://localhost:3000/api').replace(/\/$/, '')
 
-function getToken(): string | null {
-  return sessionStorage.getItem('daery_token')
+/** Erro de API com status HTTP (0 = sem resposta: rede, servidor fora do ar). */
+export class ApiError extends Error {
+  status: number
+  details?: ApiErrorBody['details']
+
+  constructor(message: string, status: number, details?: ApiErrorBody['details']) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+    this.details = details
+  }
+
+  /** Primeira mensagem de erro do campo informado, quando a API devolve erros de validação. */
+  fieldError(field: string): string | undefined {
+    return this.details?.fieldErrors?.[field]?.[0]
+  }
 }
 
-type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
+type UnauthorizedHandler = () => void
+let onUnauthorized: UnauthorizedHandler | null = null
+
+/** O AuthContext registra aqui o que fazer quando a API responde 401 (token vencido ou inválido). */
+export function setUnauthorizedHandler(handler: UnauthorizedHandler | null): void {
+  onUnauthorized = handler
+}
+
+type ForbiddenHandler = () => void
+let onForbidden: ForbiddenHandler | null = null
+
+/**
+ * O AuthContext registra aqui o que fazer quando a API responde 403: o perfil salvo no
+ * navegador pode estar desatualizado (ex.: o admin rebaixou ou desativou a permissão).
+ */
+export function setForbiddenHandler(handler: ForbiddenHandler | null): void {
+  onForbidden = handler
+}
+
+type HttpMethod = 'GET' | 'POST' | 'PATCH' | 'DELETE'
 
 interface RequestOptions {
   method?: HttpMethod
   body?: unknown
+  query?: Record<string, string | number | undefined | null>
   signal?: AbortSignal
+  /** Rotas de login/cadastro: um 401 nelas é "credencial errada", não "sessão expirada". */
+  skipUnauthorizedHandler?: boolean
 }
 
-interface ApiResponse<T = unknown> {
-  data: T
-  status: number
+function buildUrl(path: string, query?: RequestOptions['query']): string {
+  const params = new URLSearchParams()
+  for (const [key, value] of Object.entries(query ?? {})) {
+    if (value !== undefined && value !== null && value !== '') params.set(key, String(value))
+  }
+  const qs = params.toString()
+  return `${BASE_URL}${path}${qs ? `?${qs}` : ''}`
 }
 
-async function fetchAPI<T = unknown>(
-  path: string,
-  options: RequestOptions = {}
-): Promise<ApiResponse<T>> {
+export async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  const headers: Record<string, string> = { Accept: 'application/json' }
+  if (options.body !== undefined) headers['Content-Type'] = 'application/json'
   const token = getToken()
-  const headers: HeadersInit = { 'Content-Type': 'application/json' }
+  if (token) headers.Authorization = `Bearer ${token}`
 
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`
+  let response: Response
+  try {
+    response = await fetch(buildUrl(path, options.query), {
+      method: options.method ?? 'GET',
+      headers,
+      body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+      signal: options.signal,
+    })
+  } catch (error) {
+    if ((error as Error).name === 'AbortError') throw error
+    throw new ApiError('Network error', 0)
   }
 
-  const response = await fetch(`${BASE_URL}${path}`, {
-    method: options.method ?? 'GET',
-    headers,
-    body: options.body ? JSON.stringify(options.body) : undefined,
-    signal: options.signal,
-  })
+  if (response.status === 204) return undefined as T
+
+  const body = (await response.json().catch(() => null)) as unknown
 
   if (!response.ok) {
-    const errorBody = await response.json().catch(() => ({}))
-    const error = new Error(
-      (errorBody as { message?: string }).message ?? `HTTP ${response.status}`
-    )
-    ;(error as Error & { status: number }).status = response.status
-    throw error
+    const errorBody = (body ?? {}) as Partial<ApiErrorBody>
+    if (response.status === 401 && !options.skipUnauthorizedHandler) onUnauthorized?.()
+    if (response.status === 403) onForbidden?.()
+    throw new ApiError(errorBody.error ?? `HTTP ${response.status}`, response.status, errorBody.details)
   }
 
-  const data: T = await response.json()
-  return { data, status: response.status }
+  return body as T
 }
 
-// --- Endpoints do Daery ---
-// Cada função mapeia um endpoint documentado na especificação (Seção 22.2).
-// Substituir os retornos mock pelos calls reais quando o backend existir.
+// --- Autenticação -----------------------------------------------------------
 
-export interface EpiCase {
-  id: number
-  city: string
-  state: string
-  disease: string
-  cases: number
-  newCases?: number
-  severity: 'critical' | 'high' | 'medium' | 'low'
-  coordinates: [number, number]
-  lastUpdate: string
-  trend?: 'up' | 'down' | 'stable'
-}
-
-export interface EpiAlert {
-  id: number
-  type: 'critical' | 'warning' | 'info'
-  title: string
-  description: string
-  time: string
-  read: boolean
-}
-
-// GET /api/v1/epidemiological-cases
-export async function getCases(params?: {
-  disease?: string
-  severity?: string
-  startDate?: string
-  endDate?: string
-  search?: string
-  signal?: AbortSignal
-}): Promise<EpiCase[]> {
-
-  void fetchAPI
-  return Promise.resolve([])
-}
-
-export async function getAlerts(): Promise<EpiAlert[]> {
-  return Promise.resolve([])
-}
-
-export async function exportCSV(params: {
-  disease?: string
-  startDate?: string
-  endDate?: string
-}): Promise<Blob> {
-  const token = getToken()
-  const query = new URLSearchParams(
-    Object.fromEntries(Object.entries(params).filter(([, v]) => Boolean(v)))
-  ).toString()
-
-  const response = await fetch(`${BASE_URL}/export?${query}`, {
-    headers: {
-      Authorization: token ? `Bearer ${token}` : '',
-    },
-  })
-
-  if (!response.ok) throw new Error(`Erro ao exportar: HTTP ${response.status}`)
-  return response.blob()
-}
-
-// POST /api/v1/auth/login
-export async function authLogin(email: string, password: string) {
-  return fetchAPI<{ token: string; user: unknown }>('/auth/login', {
+export function authLogin(email: string, password: string): Promise<AuthResponse> {
+  return request<AuthResponse>('/auth/login', {
     method: 'POST',
     body: { email, password },
+    skipUnauthorizedHandler: true,
   })
 }
 
-export async function authRegister(payload: {
-  nome: string
-  email: string
-  senha: string
-  cpf: string
-  profile: 'geral' | 'profissional'
-  tipoRegistro?: string
-  numeroRegistro?: string
-  estadoUF?: string
-  especialidade?: string
-}) {
-  return fetchAPI('/auth/register', { method: 'POST', body: payload })
+export function authRegister(payload: RegisterPayload): Promise<AuthResponse> {
+  return request<AuthResponse>('/auth/register', {
+    method: 'POST',
+    body: payload,
+    skipUnauthorizedHandler: true,
+  })
+}
+
+export function authMe(signal?: AbortSignal): Promise<MeResponse> {
+  return request<MeResponse>('/auth/me', { signal })
+}
+
+export function updateMe(data: { name: string }): Promise<MeResponse> {
+  return request<MeResponse>('/auth/me', { method: 'PATCH', body: data })
+}
+
+// --- Dados públicos (mapa, filtros e alertas) -------------------------------
+
+export function getDiseases(signal?: AbortSignal): Promise<Disease[]> {
+  return request<Disease[]>('/diseases', { signal })
+}
+
+export function getRegions(uf?: string, signal?: AbortSignal): Promise<Region[]> {
+  return request<Region[]>('/regions', { query: { uf }, signal })
+}
+
+export function getCaseSummary(filters: SummaryFilters = {}, signal?: AbortSignal): Promise<SummaryResponse> {
+  return request<SummaryResponse>('/epidemiological-data/summary', { query: { ...filters }, signal })
+}
+
+// --- Notificação de casos (profissionais e instituições aprovados) ---------------
+
+export function createCaseNotification(payload: CaseNotificationPayload): Promise<CaseNotification> {
+  return request<CaseNotification>('/case-notifications', { method: 'POST', body: payload })
+}
+
+export function getAlerts(filters: AlertFilters = {}, signal?: AbortSignal): Promise<Alert[]> {
+  return request<Alert[]>('/alerts', { query: { ...filters }, signal })
 }
