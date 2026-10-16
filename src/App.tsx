@@ -8,12 +8,12 @@ import ForgotPassword from './pages/ForgotPassword'
 import Profile from './pages/Profile'
 import HomePublic from './pages/HomePublic'
 import HomeProfessional from './pages/HomeProfessional'
+import { homePathFor } from './utils/roles'
 
 function RootRedirect() {
-  const { isAuthenticated, user } = useAuth()
-  if (!isAuthenticated) return <Navigate to="/home-public" replace />
-  if (user?.role === 'researcher') return <Navigate to="/home-professional" replace />
-  return <Navigate to="/home-public" replace />
+  const { isReady, user } = useAuth()
+  if (!isReady) return null
+  return <Navigate to={homePathFor(user?.role)} replace />
 }
 
 function AppRoutes() {
@@ -29,7 +29,7 @@ function AppRoutes() {
       <Route
         path="/home-professional"
         element={
-          <ProtectedRoute requiredRole="researcher">
+          <ProtectedRoute requireProfessional>
             <HomeProfessional />
           </ProtectedRoute>
         }

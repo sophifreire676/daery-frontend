@@ -1,201 +1,41 @@
-import RealMap from '../components/RealMap'
-import React, { useState, useEffect, useRef } from 'react'
-import { useNavigate } from 'react-router-dom'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
+import RealMap, { MapViewMode } from '../components/RealMap'
+import AlertList from '../components/AlertList'
+import CaseReportDialog from '../components/caseReport/CaseReportDialog'
+import DataStatus from '../components/DataStatus'
+import { useAlerts, useCaseSummary, useDiseases } from '../hooks/useApiData'
+import { downloadCsv, outbreaksToCsv } from '../utils/csv'
+import {
+  SEVERITY_COLOR,
+  SEVERITY_DESCRIPTION,
+  SEVERITY_LABEL,
+  SEVERITY_ORDER,
+  SeverityKey,
+  countBySeverity,
+  filterOutbreaks,
+  formatEpiWeek,
+  formatIsoDate,
+  latestWeek,
+  formatPlatformReports,
+  hasPlatformReports,
+  sortAlertsByRelevance,
+  toOutbreak,
+} from '../utils/outbreaks'
+import { periodError, toSummaryPeriod } from '../utils/period'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { useGeolocation } from '../hooks/useGeolocation'
+import { canExportData, canReportCases, roleLabel } from '../utils/roles'
 
-interface Outbreak {
-  lng: number
-  lat: number
-  id: number
-  city: string
-  state: string
-  disease: string
-  cases: number
-  newCases: number
-  severity: 'critical' | 'high' | 'medium' | 'low'
-  coordinates: [number, number]
-  lastUpdate: string
-  trend: 'up' | 'down' | 'stable'
-}
+// Alertas marcados como lidos ficam na sessão do navegador.
+const READ_ALERTS_KEY = 'daery_read_alerts'
 
-interface Alert {
-  id: number
-  type: 'critical' | 'warning' | 'info'
-  title: string
-  description: string
-  time: string
-  read: boolean
-}
-
-const OUTBREAKS: Outbreak[] = [
-  {
-    id: 1,
-    city: 'São Paulo',
-    state: 'SP',
-    disease: 'Dengue',
-    cases: 1284,
-    newCases: 87,
-    severity: 'critical',
-    coordinates: [-23.5505, -46.6333],
-    lastUpdate: '2h atrás',
-    trend: 'up',
-    lng: 0,
-    lat: 0
-  },
-  {
-    id: 2,
-    city: 'Rio de Janeiro',
-    state: 'RJ',
-    disease: 'Chikungunya',
-    cases: 432,
-    newCases: 12,
-    severity: 'high',
-    coordinates: [-22.9068, -43.1729],
-    lastUpdate: '4h atrás',
-    trend: 'stable',
-    lng: 0,
-    lat: 0
-  },
-  {
-    id: 3,
-    city: 'Brasília',
-    state: 'DF',
-    disease: 'Dengue',
-    cases: 215,
-    newCases: -8,
-    severity: 'medium',
-    coordinates: [-15.7942, -47.8822],
-    lastUpdate: '1h atrás',
-    trend: 'down',
-    lng: 0,
-    lat: 0
-  },
-]
-
-const ALERTS: Alert[] = [
-  { id: 1, type: 'critical', title: 'Surto crítico detectado – SP', description: 'Dengue em São Paulo atingiu limiar crítico. +87 casos nas últimas 24h.', time: '2h atrás', read: false },
-  { id: 2, type: 'warning',  title: 'Aumento em Recife', description: 'Alta de 36% em casos de Dengue. Monitorar nos próximos dias.', time: '3h atrás', read: false },
-  { id: 3, type: 'info',     title: 'Queda em Brasília', description: 'Redução de 8 casos no DF. Possível efeito das ações preventivas.', time: '5h atrás', read: true },
-  { id: 4, type: 'warning',  title: 'Novo foco em Manaus', description: 'Malária com tendência de alta. 21 novos casos registrados.', time: '6h atrás', read: true },
-]
-
-const SEVERITY_COLOR: Record<string, string> = {
-  critical: '#ef4444',
-  high: '#f97316',
-  medium: '#eab308',
-  low: '#22c55e',
-}
-
-const SEVERITY_LABEL: Record<string, string> = {
-  critical: 'Crítico',
-  high: 'Alto',
-  medium: 'Médio',
-  low: 'Baixo',
-}
-
-const DISEASES = ['Todas', 'Dengue', 'Chikungunya', 'Zika', 'Malária']
-
-type Ripple = { x: number; y: number; r: number; alpha: number; speed: number; color: string }
-
-function EpiMap({ outbreaks }: { outbreaks: Outbreak[] }) {
-  const canvasRef = useRef<HTMLCanvasElement>(null)
-  const animRef = useRef<number>(0)
-  const ripplesRef = useRef<Ripple[]>([])
-
-  useEffect(() => {
-    const canvas = canvasRef.current
-    if (!canvas) return
-    const ctx = canvas.getContext('2d')!
-
-    const addRipple = () => {
-      const ob = outbreaks[Math.floor(Math.random() * outbreaks.length)]
-      if (!ob) return
-
-      ripplesRef.current.push({
-        x: ob.lat,
-        y: ob.lng,
-        r: 0,
-        alpha: 0.85,
-        speed: 0.5 + Math.random() * 0.5,
-        color: SEVERITY_COLOR[ob.severity],
-      })
-    }
-
-    const iv = setInterval(addRipple, 450)
-
-    const draw = () => {
-      canvas.width = canvas.offsetWidth
-      canvas.height = canvas.offsetHeight
-      const w = canvas.width
-      const h = canvas.height
-
-      ctx.fillStyle = '#071a12'
-      ctx.fillRect(0, 0, w, h)
-
-      ctx.strokeStyle = 'rgba(13,158,117,0.06)'
-      ctx.lineWidth = 0.5
-
-      for (let x = 0; x < w; x += 28) {
-        ctx.beginPath()
-        ctx.moveTo(x, 0)
-        ctx.lineTo(x, h)
-        ctx.stroke()
-      }
-
-      for (let y = 0; y < h; y += 28) {
-        ctx.beginPath()
-        ctx.moveTo(0, y)
-        ctx.lineTo(w, y)
-        ctx.stroke()
-      }
-
-      outbreaks.forEach(ob => {
-        const px = ob.lat * w
-        const py = ob.lng * h
-        const color = SEVERITY_COLOR[ob.severity]
-        const grd = ctx.createRadialGradient(px, py, 0, px, py, 22)
-        grd.addColorStop(0, color + '50')
-        grd.addColorStop(1, 'transparent')
-
-        ctx.fillStyle = grd
-        ctx.beginPath()
-        ctx.arc(px, py, 22, 0, Math.PI * 2)
-        ctx.fill()
-
-        ctx.beginPath()
-        ctx.arc(px, py, 6, 0, Math.PI * 2)
-        ctx.fillStyle = color
-        ctx.fill()
-      })
-
-      for (let i = ripplesRef.current.length - 1; i >= 0; i--) {
-        const rp = ripplesRef.current[i]
-        ctx.beginPath()
-        ctx.arc(rp.x * w, rp.y * h, rp.r, 0, Math.PI * 2)
-        ctx.strokeStyle = rp.color + Math.round(rp.alpha * 255).toString(16).padStart(2, '0')
-        ctx.lineWidth = 1.5
-        ctx.stroke()
-        rp.r += rp.speed
-        rp.alpha -= 0.013
-
-        if (rp.alpha <= 0) {
-          ripplesRef.current.splice(i, 1)
-        }
-      }
-
-      animRef.current = requestAnimationFrame(draw)
-    }
-
-    draw()
-
-    return () => {
-      clearInterval(iv)
-      cancelAnimationFrame(animRef.current)
-    }
-  }, [outbreaks])
-
-  return <canvas ref={canvasRef} className="absolute inset-0 w-full h-full" />
+function loadReadAlerts(): Set<string> {
+  try {
+    return new Set(JSON.parse(sessionStorage.getItem(READ_ALERTS_KEY) ?? '[]') as string[])
+  } catch {
+    return new Set()
+  }
 }
 
 function DaeryLogo() {
@@ -220,58 +60,84 @@ export default function HomeProfessional() {
   const { user, logout } = useAuth()
   const onLogout = () => { logout(); navigate('/home-public') }
   const onGoProfile = () => navigate('/profile')
-  const [viewMode, setViewMode] = useState<'markers' | 'heatmap'>('markers')
-  const [diseaseFilter, setDiseaseFilter] = useState('Todas')
-  const [severityFilter, setSeverityFilter] = useState<string>('all')
+  const [viewMode, setViewMode] = useState<MapViewMode>('markers')
+  const [diseaseId, setDiseaseId] = useState('')
+  const [severityFilter, setSeverityFilter] = useState<SeverityKey | 'all'>('all')
   const [startDate, setStartDate] = useState('')
   const [endDate, setEndDate] = useState('')
   const [searchQuery, setSearchQuery] = useState('')
   const [showAlerts, setShowAlerts] = useState(false)
-  const [alerts, setAlerts] = useState(ALERTS)
+  const [readAlerts, setReadAlerts] = useState<Set<string>>(loadReadAlerts)
   const [activeTab, setActiveTab] = useState<'list' | 'chart'>('list')
-
-  const unreadAlerts = alerts.filter(a => !a.read).length
   const [showLocationBanner, setShowLocationBanner] = useState(true)
+  const location = useLocation()
+  const canReport = canReportCases(user?.role)
+  // RF-005: exportação só para pesquisador e admin (separado do acesso à Home 2).
+  const canExport = canExportData(user?.role)
+  const [showReport, setShowReport] = useState(false)
+  const [notice, setNotice] = useState<string | null>(null)
+  const reportButtonRef = useRef<HTMLButtonElement>(null)
 
-  const filtered = OUTBREAKS.filter(ob => {
-    const matchSev = severityFilter === 'all' || ob.severity === severityFilter
-    const matchDis = diseaseFilter === 'Todas' || ob.disease === diseaseFilter
-    const matchSearch =
-      !searchQuery ||
-      ob.city.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      ob.disease.toLowerCase().includes(searchQuery.toLowerCase())
+  // Aberto a partir de outra tela (ex.: "Reportar caso" na Home pública).
+  useEffect(() => {
+    if (canReport && (location.state as { openReport?: boolean } | null)?.openReport) {
+      setShowReport(true)
+      navigate(location.pathname, { replace: true, state: null })
+    }
+  }, [canReport, location, navigate])
 
-    return matchSev && matchDis && matchSearch
-  })
+  const closeReport = () => {
+    setShowReport(false)
+    reportButtonRef.current?.focus()
+  }
+
+  const handleCaseCreated = () => {
+    closeReport()
+    summary.reload()
+    setNotice('Caso registrado. Ele já aparece em "casos reportados no Daery" do município.')
+    setTimeout(() => setNotice(null), 6000)
+  }
+  const { status: geoStatus, coords: userCoords } = useGeolocation()
+
+  // Período e doença vão para a API; severidade e busca filtram localmente.
+  const dateError = periodError({ startDate, endDate })
+  const summaryFilters = { ...toSummaryPeriod({ startDate, endDate }), ...(diseaseId ? { diseaseId } : {}) }
+  const summary = useCaseSummary(summaryFilters, !dateError)
+  const diseases = useDiseases()
+  const alertsState = useAlerts(diseaseId ? { diseaseId } : {})
+
+  const outbreaks = useMemo(() => (summary.data?.items ?? []).map(toOutbreak), [summary.data])
+  const filtered = useMemo(
+    () => filterOutbreaks(outbreaks, { severity: severityFilter, search: searchQuery }),
+    [outbreaks, severityFilter, searchQuery]
+  )
+  const severityCounts = countBySeverity(outbreaks)
+  const alerts = useMemo(
+    () => sortAlertsByRelevance(alertsState.data ?? [], userCoords ?? null),
+    [alertsState.data, userCoords]
+  )
+  const unreadAlerts = alerts.filter(a => !readAlerts.has(a.id)).length
 
   const totalCases = filtered.reduce((a, o) => a + o.cases, 0)
   const criticalCount = filtered.filter(o => o.severity === 'critical').length
-  const now = new Date()
-  const timeStr = now.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
+  const dataUntil = latestWeek(outbreaks)
+  const hasDemoData = outbreaks.some(o => o.includesDemoData)
+  const daeryReports = filtered.filter(o => hasPlatformReports(o.platformReports))
 
-  const [exportLoading, setExportLoading] = useState(false)
-  const { status: geoStatus, coords: userCoords } = useGeolocation()
+  const markAllRead = () => {
+    const next = new Set([...readAlerts, ...alerts.map(a => a.id)])
+    setReadAlerts(next)
+    try {
+      sessionStorage.setItem(READ_ALERTS_KEY, JSON.stringify([...next]))
+    } catch {
+      /* armazenamento indisponível: vale só nesta tela */
+    }
+  }
 
-  const markAllRead = () => setAlerts(prev => prev.map(a => ({ ...a, read: true })))
-
-  const handleExportCSV = async () => {
-    setExportLoading(true)
-    await new Promise(r => setTimeout(r, 800)) // Simula tempo de geração
-    // Gera CSV dos dados filtrados atualmente visíveis
-    const header = 'id,cidade,estado,doenca,casos,novos_casos,severidade,tendencia,ultima_atualizacao'
-    const rows = filtered.map(o =>
-      [o.id, o.city, o.state, o.disease, o.cases, o.newCases, o.severity, o.trend, o.lastUpdate].join(',')
-    )
-    const csv = [header, ...rows].join('\n')
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `daery_surtos_${new Date().toISOString().slice(0,10)}.csv`
-    a.click()
-    URL.revokeObjectURL(url)
-    setExportLoading(false)
-    // TODO: substituir por exportCSV() de services/api.ts quando backend disponível
+  // RF-005 (decisão D7): CSV gerado no navegador a partir dos dados exibidos (mesmos filtros).
+  const handleExportCSV = () => {
+    if (!canExport || !summary.data || filtered.length === 0) return
+    downloadCsv(outbreaksToCsv(filtered, summary.data.period), `daery_${summary.data.period.startDate}_a_${summary.data.period.endDate}.csv`)
   }
 
   return (
@@ -296,6 +162,8 @@ export default function HomeProfessional() {
           <div className="relative">
             <button
               onClick={() => setShowAlerts(v => !v)}
+              aria-label={`Alertas${unreadAlerts ? ` (${unreadAlerts} não lidos)` : ''}`}
+              aria-expanded={showAlerts}
               className="w-9 h-9 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center text-white transition-colors relative"
             >
               <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
@@ -317,24 +185,18 @@ export default function HomeProfessional() {
                     Marcar todos como lidos
                   </button>
                 </div>
-                <div className="max-h-72 overflow-y-auto divide-y divide-slate-50">
-                  {alerts.map(al => (
-                    <div key={al.id} className={`px-4 py-3 ${al.read ? 'opacity-60' : ''}`}>
-                      <div className="flex items-start gap-2.5">
-                        <div
-                          className={`w-2 h-2 rounded-full mt-1.5 shrink-0 ${al.type === 'critical'
-                              ? 'bg-red-500'
-                              : al.type === 'warning'
-                                ? 'bg-amber-500'
-                                : 'bg-blue-400'}`} />
-                        <div>
-                          <p className="text-sm font-medium text-slate-800">{al.title}</p>
-                          <p className="text-xs text-slate-500 mt-0.5">{al.description}</p>
-                          <p className="text-[11px] text-slate-400 mt-1">{al.time}</p>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
+                <div className="max-h-96 overflow-y-auto p-3">
+                  {alerts.length > 0 ? (
+                    <AlertList alerts={alerts} readIds={readAlerts} />
+                  ) : (
+                    <DataStatus
+                      loading={alertsState.loading}
+                      error={alertsState.error}
+                      isEmpty={!alertsState.loading && !alertsState.error}
+                      onRetry={alertsState.reload}
+                      emptyText="Nenhum alerta ativo no momento."
+                    />
+                  )}
                 </div>
               </div>
             )}
@@ -354,11 +216,11 @@ export default function HomeProfessional() {
 
           <div className="flex items-center gap-2.5">
             <div className="w-8 h-8 bg-teal-600 rounded-full flex items-center justify-center text-white text-sm font-bold font-sora">
-              {user?.initials ?? 'PF'}
+              {user?.initials ?? '?'}
             </div>
             <div className="hidden sm:block">
-              <p className="text-white text-sm font-medium leading-tight">{user?.name ?? 'Pesquisador'}</p>
-              <p className="text-teal-400 text-[10px] leading-tight">{user?.role === 'researcher' ? 'Pesquisador' : 'Profissional'}</p>
+              <p className="text-white text-sm font-medium leading-tight">{user?.name ?? ''}</p>
+              <p className="text-teal-400 text-[10px] leading-tight">{user ? roleLabel(user.role) : ''}</p>
             </div>
           </div>
 
@@ -410,10 +272,10 @@ export default function HomeProfessional() {
 
       <div className="bg-white border-b border-slate-200 px-6 py-3 flex items-center gap-6 overflow-x-auto">
         {[
-          { label: 'Total de Casos', value: totalCases.toLocaleString('pt-BR') },
-          { label: 'Doenças ativas', value: new Set(filtered.map(o => o.disease)).size },
-          { label: 'Surtos Críticos', value: criticalCount },
-          { label: 'Última Atualização', value: timeStr },
+          { label: 'Casos (filtros atuais)', value: summary.loading ? '…' : totalCases.toLocaleString('pt-BR') },
+          { label: 'Doenças com casos', value: summary.loading ? '…' : new Set(filtered.filter(o => o.cases > 0).map(o => o.disease)).size },
+          { label: 'Situações críticas', value: summary.loading ? '…' : criticalCount },
+          { label: 'Dados até', value: summary.loading ? '…' : dataUntil ? `semana de ${formatIsoDate(dataUntil)}` : '—' },
         ].map((stat, i) => (
           <div key={stat.label} className={`flex flex-col shrink-0 pr-6 ${i < 3 ? 'border-r border-slate-100' : ''}`}>
             <span className="text-xs text-slate-500">{stat.label}</span>
@@ -421,33 +283,33 @@ export default function HomeProfessional() {
           </div>
         ))}
         <div className="ml-auto flex items-center gap-2">
-          <button
-            onClick={handleExportCSV}
-            disabled={exportLoading}
-            className="flex items-center gap-1.5 text-sm text-teal-600 border border-teal-200 hover:bg-teal-50 px-3 py-1.5 rounded-lg transition-colors font-medium disabled:opacity-50"
-          >
-            {exportLoading ? (
-              <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+          {canReport && (
+            <button
+              ref={reportButtonRef}
+              onClick={() => setShowReport(true)}
+              className="flex items-center gap-1.5 text-sm text-white bg-teal-600 hover:bg-teal-700 px-3 py-1.5 rounded-lg transition-colors font-medium"
+            >
+              <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+                <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
               </svg>
-            ) : (
+              Reportar caso
+            </button>
+          )}
+          {canExport && (
+            <button
+              onClick={handleExportCSV}
+              disabled={summary.loading || filtered.length === 0}
+              title="Baixa os registros exibidos, com os filtros atuais"
+              className="flex items-center gap-1.5 text-sm text-teal-600 border border-teal-200 hover:bg-teal-50 px-3 py-1.5 rounded-lg transition-colors font-medium disabled:opacity-50"
+            >
               <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
                 <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
                 <polyline points="7 10 12 15 17 10" />
                 <line x1="12" y1="15" x2="12" y2="3" />
               </svg>
-            )}
-            {exportLoading ? 'Exportando...' : 'Exportar CSV'}
-          </button>
-          <button className="flex items-center gap-1.5 text-sm text-slate-600 border border-slate-200 hover:bg-slate-50 px-3 py-1.5 rounded-lg transition-colors">
-            <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-              <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
-              <line x1="3" y1="9" x2="21" y2="9" />
-              <line x1="9" y1="21" x2="9" y2="3" />
-            </svg>
-            Série histórica
-          </button>
+              Exportar CSV
+            </button>
+          )}
         </div>
       </div>
 
@@ -462,17 +324,19 @@ export default function HomeProfessional() {
             </h2>
 
             <div className="mb-4">
-              <p className="text-xs text-slate-500 mb-2 font-medium">Modo de Visualização</p>
+              <p className="text-xs text-slate-500 mb-2 font-medium">Modo de visualização</p>
               <div className="flex gap-1.5">
-                {(['markers', 'heatmap'] as const).map(mode => (
+                {(['markers', 'intensity'] as const).map(mode => (
                   <button
                     key={mode}
                     onClick={() => setViewMode(mode)}
+                    aria-pressed={viewMode === mode}
+                    title={mode === 'intensity' ? 'Tamanho do círculo proporcional ao número de casos' : 'Círculos do mesmo tamanho, cor pela severidade'}
                     className={`flex-1 py-1.5 text-xs font-medium rounded-md border transition-all ${viewMode === mode
                         ? 'bg-teal-600 border-teal-600 text-white'
                         : 'border-slate-200 text-slate-600 hover:border-teal-300'}`}
                   >
-                    {mode === 'markers' ? 'Marcadores' : 'Heatmap'}
+                    {mode === 'markers' ? 'Marcadores' : 'Intensidade'}
                   </button>
                 ))}
               </div>
@@ -481,32 +345,39 @@ export default function HomeProfessional() {
             <div className="mb-4">
               <p className="text-xs text-slate-500 mb-2 font-medium">Doenças</p>
               <div className="space-y-1">
-                {DISEASES.map(d => (
+                {[{ id: '', name: 'Todas', monitoredByInfoDengue: false }, ...(diseases.data ?? [])].map(d => (
                   <button
-                    key={d}
-                    onClick={() => setDiseaseFilter(d)}
-                    className={`w-full text-left text-xs px-2.5 py-1.5 rounded-md transition-all ${diseaseFilter === d
+                    key={d.id || 'todas'}
+                    onClick={() => setDiseaseId(d.id)}
+                    aria-pressed={diseaseId === d.id}
+                    className={`w-full flex items-center text-left text-xs px-2.5 py-1.5 rounded-md transition-all ${diseaseId === d.id
                         ? 'bg-teal-50 text-teal-700 font-medium'
                         : 'text-slate-600 hover:bg-slate-50'}`}
                   >
-                    {d}
+                    {d.name}
+                    {d.id && !d.monitoredByInfoDengue && (
+                      <span className="ml-auto text-[10px] text-slate-400" title="O InfoDengue não cobre esta doença">sem InfoDengue</span>
+                    )}
                   </button>
                 ))}
+                {diseases.error && <p className="text-[11px] text-red-600 px-2.5">Não foi possível carregar as doenças.</p>}
               </div>
             </div>
 
             <div className="mb-4">
               <p className="text-xs text-slate-500 mb-2 font-medium">Severidade</p>
               <div className="space-y-1.5">
-                {(['critical', 'high', 'medium', 'low'] as const).map(sev => (
+                {SEVERITY_ORDER.filter(sev => sev !== 'unknown' || severityCounts.unknown > 0).map(sev => (
                   <button
                     key={sev}
                     onClick={() => setSeverityFilter(severityFilter === sev ? 'all' : sev)}
+                    aria-pressed={severityFilter === sev}
+                    title={SEVERITY_DESCRIPTION[sev]}
                     className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md text-xs transition-all ${severityFilter === sev ? 'bg-slate-100 font-medium' : 'hover:bg-slate-50'}`}
                   >
                     <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: SEVERITY_COLOR[sev] }} />
                     <span className="text-slate-600">{SEVERITY_LABEL[sev]}</span>
-                    <span className="ml-auto text-slate-400">{OUTBREAKS.filter(o => o.severity === sev).length}</span>
+                    <span className="ml-auto text-slate-400">{severityCounts[sev]}</span>
                   </button>
                 ))}
               </div>
@@ -516,41 +387,42 @@ export default function HomeProfessional() {
               <p className="text-xs text-slate-500 mb-2 font-medium">Período</p>
               <div className="space-y-2">
                 <div>
-                  <label className="text-xs text-slate-400">Data Inicial</label>
+                  <label htmlFor="pro-start" className="text-xs text-slate-400">Data inicial</label>
                   <input
+                    id="pro-start"
                     type="date"
                     value={startDate}
                     onChange={e => setStartDate(e.target.value)}
                     className="w-full mt-1 text-xs border border-slate-200 rounded-md px-2.5 py-1.5 text-slate-600 focus:outline-none focus:border-teal-400 bg-white" />
                 </div>
                 <div>
-                  <label className="text-xs text-slate-400">Data Final</label>
+                  <label htmlFor="pro-end" className="text-xs text-slate-400">Data final</label>
                   <input
+                    id="pro-end"
                     type="date"
                     value={endDate}
                     onChange={e => setEndDate(e.target.value)}
                     className="w-full mt-1 text-xs border border-slate-200 rounded-md px-2.5 py-1.5 text-slate-600 focus:outline-none focus:border-teal-400 bg-white" />
                 </div>
+                {dateError ? (
+                  <p role="alert" className="text-xs text-red-600">{dateError}</p>
+                ) : (
+                  <p className="text-[11px] text-slate-400">
+                    {summary.data ? `Exibindo ${formatIsoDate(summary.data.period.startDate)} a ${formatIsoDate(summary.data.period.endDate)}` : 'Sem datas, mostra as últimas 8 semanas.'}
+                  </p>
+                )}
               </div>
             </div>
 
             <div>
-              <p className="text-xs text-slate-500 mb-2 font-medium">Meus alertas</p>
-              <div className="space-y-1.5">
-                {alerts.slice(0, 3).map(al => (
-                  <div
-                    key={al.id}
-                    className={`p-2 rounded-md text-xs border ${al.type === 'critical'
-                        ? 'bg-red-50 border-red-100 text-red-700'
-                        : al.type === 'warning'
-                          ? 'bg-amber-50 border-amber-100 text-amber-700'
-                          : 'bg-blue-50 border-blue-100 text-blue-700'} ${al.read ? 'opacity-50' : ''}`}
-                  >
-                    <p className="font-medium truncate">{al.title}</p>
-                    <p className="text-[10px] opacity-70 mt-0.5">{al.time}</p>
-                  </div>
-                ))}
-              </div>
+              <p className="text-xs text-slate-500 mb-2 font-medium">Alertas mais relevantes</p>
+              {alerts.length > 0 ? (
+                <AlertList alerts={alerts} readIds={readAlerts} maxItems={3} compact />
+              ) : (
+                <p className="text-xs text-slate-400">
+                  {alertsState.loading ? 'Carregando…' : alertsState.error ? 'Não foi possível carregar os alertas.' : 'Nenhum alerta ativo.'}
+                </p>
+              )}
             </div>
           </div>
         </aside>
@@ -559,26 +431,41 @@ export default function HomeProfessional() {
   <div className="relative bg-[#071a12] overflow-hidden min-h-[420px] w-full">
     <RealMap
       outbreaks={filtered}
+      mode={viewMode}
       center={userCoords ?? undefined}
       zoom={userCoords ? 9 : 4}
     />
 
-    <div className="absolute top-3 right-3 z-[9999]">
-      Mapa de Surtos Epidemiológicos
+    <DataStatus
+      variant="overlay"
+      loading={summary.loading}
+      error={dateError ? null : summary.error}
+      isEmpty={!dateError && !summary.loading && !summary.error && filtered.length === 0}
+      onRetry={summary.reload}
+      emptyText={outbreaks.length === 0 ? 'Ainda não há dados para este período.' : 'Nenhum resultado para os filtros escolhidos.'}
+    />
+
+    <div className="absolute top-3 left-14 bg-black/60 backdrop-blur-sm text-white px-3 py-1.5 rounded-lg text-sm font-sora font-semibold z-[500]">
+      Mapa epidemiológico
     </div>
 
-    <div className="absolute bottom-3 right-3 bg-black/60 backdrop-blur-sm px-3 py-2 rounded-lg flex items-center gap-3 text-xs">
-      {Object.entries(SEVERITY_COLOR).map(([key, color]) => (
-        <div key={key} className="flex items-center gap-1.5">
-          <span className="w-2 h-2 rounded-full" style={{ background: color }} />
+    {hasDemoData && (
+      <div className="absolute top-3 right-3 bg-amber-100 text-amber-900 text-xs px-2.5 py-1 rounded-lg z-[500]">
+        Inclui dados fictícios de demonstração
+      </div>
+    )}
+
+    <div className="absolute bottom-3 right-3 bg-black/60 backdrop-blur-sm px-3 py-2 rounded-lg flex flex-wrap items-center gap-3 text-xs z-[500]">
+      {SEVERITY_ORDER.map(key => (
+        <div key={key} className="flex items-center gap-1.5" title={SEVERITY_DESCRIPTION[key]}>
+          <span className="w-2 h-2 rounded-full" style={{ background: SEVERITY_COLOR[key] }} />
           <span className="text-white/80">{SEVERITY_LABEL[key]}</span>
         </div>
       ))}
     </div>
 
-    <div className="absolute bottom-3 left-3 text-white/70 text-xs bg-black/40 px-2.5 py-1 rounded-lg">
-      {filtered.length} surtos encontrados &nbsp;·&nbsp;{' '}
-      {filtered.reduce((a, o) => a + o.cases, 0).toLocaleString('pt-BR')} casos totais
+    <div className="absolute bottom-3 left-3 text-white text-xs bg-black/60 px-2.5 py-1 rounded-lg z-[500]" aria-live="polite">
+      {filtered.length} {filtered.length === 1 ? 'registro' : 'registros'} · {totalCases.toLocaleString('pt-BR')} casos
     </div>
   </div>
 
@@ -605,9 +492,13 @@ export default function HomeProfessional() {
     {activeTab === 'list' ? (
       <div className="overflow-auto flex-1 p-4">
         {filtered.length === 0 ? (
-      <div className="text-center text-slate-400 text-sm py-10">
-        Nenhum surto encontrado com os filtros atuais
-      </div>
+      <DataStatus
+        loading={summary.loading}
+        error={dateError ? null : summary.error}
+        isEmpty
+        onRetry={summary.reload}
+        emptyText="Nenhum registro com os filtros atuais."
+      />
     ) : (
        <div className="grid gap-3">
         {filtered.map((item) => (
@@ -633,7 +524,14 @@ export default function HomeProfessional() {
               </p>
 
               <p className="text-xs text-slate-400 mt-1">
-                {item.cases.toLocaleString('pt-BR')} casos
+                {item.cases.toLocaleString('pt-BR')} casos notificados
+                {item.estimatedCases !== null && ` · ${item.estimatedCases.toLocaleString('pt-BR')} estimados`}
+                {item.latestWeekStart && ` · ${formatEpiWeek(item.latestEpiWeek) || 'semana de ' + formatIsoDate(item.latestWeekStart)}`}
+              </p>
+              <p className="text-[11px] text-slate-400 mt-0.5">
+                {hasPlatformReports(item.platformReports) && `Daery: ${formatPlatformReports(item.platformReports)} · `}
+                Fonte: {item.sources.join(', ') || 'notificações do Daery'}
+                {item.coordinates === null && ' · sem localização no mapa'}
               </p>
             </div>
 
@@ -656,11 +554,10 @@ export default function HomeProfessional() {
   </div>
 ) : (
       <div className="flex-1 p-4 overflow-auto">
-        <p className="text-xs text-slate-500 mb-3 font-medium">Casos por doença (dados filtrados)</p>
+        <p className="text-xs text-slate-500 mb-3 font-medium">Casos notificados por doença (filtros atuais)</p>
         <div className="space-y-3">
           {Array.from(new Set(filtered.map(o => o.disease))).map(disease => {
             const total = filtered.filter(o => o.disease === disease).reduce((a, o) => a + o.cases, 0)
-            const maxCases = filtered.reduce((a, o) => Math.max(a, o.cases), 1)
             const pct = Math.round((total / Math.max(filtered.reduce((a,o) => a+o.cases, 0), 1)) * 100)
             return (
               <div key={disease}>
@@ -681,27 +578,34 @@ export default function HomeProfessional() {
             <p className="text-center text-slate-400 text-sm py-8">Nenhum dado com os filtros atuais</p>
           )}
         </div>
-        <div className="mt-5 pt-4 border-t border-slate-100">
-          <p className="text-xs text-slate-500 mb-3 font-medium">Tendência por surto (últimas 24h)</p>
-          <div className="grid gap-2">
-            {filtered.map(o => (
-              <div key={o.id} className="flex items-center justify-between text-xs text-slate-600 bg-slate-50 rounded-lg px-3 py-2">
-                <span>{o.city} — {o.disease}</span>
-                <div className="flex items-center gap-2">
-                  <span className={`font-semibold ${o.newCases > 0 ? 'text-red-500' : o.newCases < 0 ? 'text-teal-600' : 'text-slate-500'}`}>
-                    {o.newCases > 0 ? '+' : ''}{o.newCases} casos
-                  </span>
-                  <span>{o.trend === 'up' ? '↑' : o.trend === 'down' ? '↓' : '→'}</span>
+        {daeryReports.length > 0 && (
+          <div className="mt-5 pt-4 border-t border-slate-100">
+            <p className="text-xs text-slate-500 mb-3 font-medium">Casos reportados no Daery por profissionais e instituições</p>
+            <div className="grid gap-2">
+              {daeryReports.map(o => (
+                <div key={o.id} className="flex items-center justify-between text-xs text-slate-600 bg-slate-50 rounded-lg px-3 py-2">
+                  <span>{o.city} — {o.disease}</span>
+                  <span>{formatPlatformReports(o.platformReports)}</span>
                 </div>
-              </div>
-            ))}
+              ))}
+            </div>
+            <p className="text-[11px] text-slate-400 mt-2">Contados à parte das fontes externas, porque o mesmo paciente pode estar nas duas.</p>
           </div>
-        </div>
+        )}
       </div>
     )}
   </div>
         </main>
       </div>
+      {showReport && (
+        <CaseReportDialog diseases={diseases.data ?? []} onClose={closeReport} onCreated={handleCaseCreated} />
+      )}
+
+      {notice && (
+        <div role="status" className="fixed bottom-6 right-6 bg-[#0B2D2A] text-white px-5 py-3.5 rounded-xl text-sm shadow-xl z-[2100]">
+          ✓ {notice}
+        </div>
+      )}
     </div>
   )
 }

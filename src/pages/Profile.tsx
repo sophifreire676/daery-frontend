@@ -1,6 +1,9 @@
-import React, { useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
+import { homePathFor, roleLabel, verificationLabel } from '../utils/roles'
+import { friendlyError } from '../utils/errorMessages'
+import { maskCnpj } from '../utils/documents'
 
 
 interface HealthIndicator {
@@ -96,6 +99,15 @@ function SectionTitle({
   )
 }
 
+/** Aviso para seções cuja gravação chega com o perfil de saúde (etapa B4 / RF-010). */
+function NotSavedYet({ children }: { children: React.ReactNode }) {
+  return (
+    <p className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+      {children}
+    </p>
+  )
+}
+
 function MiniMap() {
   return (
     <div className="w-full h-full bg-slate-100 rounded-lg overflow-hidden relative">
@@ -133,8 +145,8 @@ function MiniMap() {
 
 export default function Profile() {
   const navigate = useNavigate()
-  const { user, logout } = useAuth()
-  const onBackToHomeProfessional = () => navigate('/home-professional')
+  const { user, logout, details, refresh, updateName } = useAuth()
+  const onBackToHomeProfessional = () => navigate(homePathFor(user?.role))
   const [nome, setNome] = useState(user?.name ?? '')
   const [dataNasc, setDataNasc] = useState('')
   const [genero, setGenero] = useState('Masculino')
@@ -150,12 +162,45 @@ export default function Profile() {
 
   const [shareData, setShareData] = useState(true)
 
-  const [toast, setToast] = useState<string | null>(null)
+  const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' | 'info' } | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [nameError, setNameError] = useState<string | null>(null)
 
-  const showToast = (msg: string) => {
-    setToast(msg)
-    setTimeout(() => setToast(null), 2500)
+  const showToast = (msg: string, type: 'success' | 'error' | 'info' = 'info') => {
+    setToast({ msg, type })
+    setTimeout(() => setToast(null), 4000)
   }
+
+  // Busca os dados de cadastro (registro profissional, instituição) se ainda não vieram.
+  useEffect(() => {
+    if (!details) refresh().catch(() => undefined)
+  }, [details, refresh])
+
+  useEffect(() => {
+    if (user?.name) setNome(user.name)
+  }, [user?.name])
+
+  const nameChanged = !!user && nome.trim() !== user.name
+  const verification = user ? verificationLabel(user.verificationStatus, user.requestedRole) : null
+
+  const handleSave = async () => {
+    if (!nome.trim()) {
+      setNameError('Informe um nome.')
+      return
+    }
+    setSaving(true)
+    try {
+      await updateName(nome)
+      setNameError(null)
+      showToast('Nome atualizado.', 'success')
+    } catch (error) {
+      showToast(friendlyError(error), 'error')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const comingSoon = (what: string) => showToast(`${what}: disponível na próxima etapa do projeto.`)
 
   const age = dataNasc
     ? Math.floor((Date.now() - new Date(dataNasc).getTime()) / (365.25 * 24 * 60 * 60 * 1000))
@@ -244,17 +289,6 @@ export default function Profile() {
     active: false,
     onClick: onBackToHomeProfessional,
   },
-  {
-    label: 'Dashboard',
-    icon: (
-      <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-        <line x1="18" y1="20" x2="18" y2="10" />
-        <line x1="12" y1="20" x2="12" y2="4" />
-        <line x1="6" y1="20" x2="6" y2="14" />
-      </svg>
-    ),
-    active: false,
-  },
 ].map(item => (
   <button
     key={item.label}
@@ -279,7 +313,7 @@ export default function Profile() {
             </div>
             <span className="text-sm text-slate-700 font-medium">{(user?.name ?? nome) || 'Meu perfil'}</span>
             <span className="text-xs text-teal-600 bg-teal-50 border border-teal-200 px-2 py-0.5 rounded-full">
-              {user?.role === 'researcher' ? 'Pesquisador' : 'Público'}
+              {user ? roleLabel(user.role) : ''}
             </span>
           </div>
           <button
@@ -337,23 +371,63 @@ export default function Profile() {
               {/* Nome + Email */}
               <div className="flex-1 grid grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-xs font-medium text-slate-500 mb-1.5">Nome / Apelido</label>
+                  <label htmlFor="perfil-nome" className="block text-xs font-medium text-slate-500 mb-1.5">Nome</label>
                   <input
+                    id="perfil-nome"
                     value={nome}
-                    onChange={e => setNome(e.target.value)}
+                    maxLength={120}
+                    onChange={e => { setNome(e.target.value); setNameError(null) }}
+                    aria-invalid={!!nameError}
+                    aria-describedby={nameError ? 'perfil-nome-erro' : undefined}
                     className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/15"
                   />
+                  {nameError && <p id="perfil-nome-erro" className="mt-1 text-xs text-red-500">{nameError}</p>}
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-slate-500 mb-1.5">E-mail</label>
+                  <label htmlFor="perfil-email" className="block text-xs font-medium text-slate-500 mb-1.5">E-mail</label>
                   <input
-                    defaultValue={user?.email ?? ''}
+                    id="perfil-email"
+                    value={user?.email ?? ''}
+                    readOnly
                     className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-slate-50 text-slate-400 focus:outline-none cursor-not-allowed"
                     disabled
                   />
                 </div>
               </div>
             </div>
+
+            {/* Dados da conta, vindos de GET /api/auth/me */}
+            <dl className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-5 rounded-xl border border-slate-200 p-4 text-sm">
+              <div>
+                <dt className="text-xs text-slate-500">Perfil</dt>
+                <dd className="font-medium text-slate-800">{user ? roleLabel(user.role) : '—'}</dd>
+              </div>
+              <div>
+                <dt className="text-xs text-slate-500">CPF</dt>
+                <dd className="font-medium text-slate-800">{user?.cpf ?? '—'}</dd>
+              </div>
+              <div>
+                <dt className="text-xs text-slate-500">Situação do cadastro</dt>
+                <dd className={`font-medium ${verification ? 'text-amber-700' : 'text-slate-800'}`}>{verification ?? 'Ativo'}</dd>
+              </div>
+              {details?.professionalRegistration && (
+                <div className="sm:col-span-3">
+                  <dt className="text-xs text-slate-500">Registro profissional</dt>
+                  <dd className="font-medium text-slate-800">
+                    {details.professionalRegistration.council} {details.professionalRegistration.registrationNumber}/{details.professionalRegistration.uf}
+                    {details.professionalRegistration.specialty && ` · ${details.professionalRegistration.specialty}`}
+                  </dd>
+                </div>
+              )}
+              {details?.institution && (
+                <div className="sm:col-span-3">
+                  <dt className="text-xs text-slate-500">Instituição</dt>
+                  <dd className="font-medium text-slate-800">{details.institution.name} · CNPJ {maskCnpj(details.institution.cnpj)}</dd>
+                </div>
+              )}
+            </dl>
+
+            <NotSavedYet>Data de nascimento, gênero e CEP ainda não são salvos. Eles passam a ser gravados com o perfil de saúde.</NotSavedYet>
 
             {/* Data / Gênero / Idade */}
             <div className="grid grid-cols-3 gap-4 mb-5">
@@ -437,6 +511,7 @@ export default function Profile() {
               open={healthOpen}
               onToggle={() => setHealthOpen(o => !o)}
             />
+            <NotSavedYet>Os indicadores de saúde ainda não são salvos. Esta seção chega com o perfil de saúde, com consentimento específico (dado sensível pela LGPD).</NotSavedYet>
 
             {healthOpen && (
               <div className="rounded-xl border border-slate-200 overflow-hidden">
@@ -457,7 +532,7 @@ export default function Profile() {
                         <td className="px-4 py-3 text-slate-400 text-xs">{ind.detail}</td>
                         <td className="px-4 py-3 text-right">
                           <button
-                            onClick={() => showToast(`${actionLabel(ind.action)}: ${ind.label}`)}
+                            onClick={() => comingSoon(`${actionLabel(ind.action)} ${ind.label.toLowerCase()}`)}
                             className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-600 border border-slate-200 rounded-lg hover:bg-slate-50 hover:border-slate-300 transition-colors"
                           >
                             {actionIcon(ind.action)}
@@ -478,6 +553,7 @@ export default function Profile() {
               icon={<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="w-5 h-5"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93A10 10 0 1 0 4.93 19.07"/><path d="M12 2v2M12 20v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M2 12h2M20 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>}
               title="Preferências"
             />
+            <NotSavedYet>As preferências ainda não são salvas.</NotSavedYet>
 
             {/* Notifications */}
             <div className="mb-5">
@@ -566,7 +642,7 @@ export default function Profile() {
             {/* Action buttons */}
             <div className="grid grid-cols-2 gap-3">
               <button
-                onClick={() => showToast('Exportação iniciada...')}
+                onClick={() => comingSoon('Exportar meus dados')}
                 className="flex items-center justify-center gap-2 px-4 py-2.5 border border-slate-200 rounded-xl text-sm text-slate-600 hover:bg-slate-50 hover:border-slate-300 transition-colors font-medium"
               >
                 <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
@@ -575,7 +651,7 @@ export default function Profile() {
                 Exportar meus dados
               </button>
               <button
-                onClick={() => showToast('Ação irreversível — confirmação necessária')}
+                onClick={() => comingSoon('Excluir meus dados')}
                 className="flex items-center justify-center gap-2 px-4 py-2.5 border border-red-200 rounded-xl text-sm text-red-500 hover:bg-red-50 hover:border-red-300 transition-colors font-medium"
               >
                 <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
@@ -593,6 +669,9 @@ export default function Profile() {
               title="Histórico de Acesso"
             />
             <div className="space-y-1">
+              {accessLogs.length === 0 && (
+                <p className="text-sm text-slate-500 px-2 py-3">Nenhum registro de acesso disponível ainda.</p>
+              )}
               {accessLogs.map(log => (
                 <div key={log.id} className="flex items-center gap-3 px-2 py-3 rounded-lg hover:bg-slate-50 transition-colors">
                   <div className="w-7 h-7 rounded-lg bg-slate-100 flex items-center justify-center flex-shrink-0">
@@ -619,10 +698,11 @@ export default function Profile() {
           {/* Save button */}
           <div className="flex justify-end pb-4">
             <button
-              onClick={() => showToast('Perfil salvo com sucesso!')}
-              className="bg-teal-600 hover:bg-teal-700 text-white font-semibold font-sora px-8 py-2.5 rounded-xl text-sm transition-colors"
+              onClick={handleSave}
+              disabled={!nameChanged || saving}
+              className="bg-teal-600 hover:bg-teal-700 disabled:bg-teal-300 disabled:cursor-not-allowed text-white font-semibold font-sora px-8 py-2.5 rounded-xl text-sm transition-colors"
             >
-              Salvar alterações
+              {saving ? 'Salvando…' : 'Salvar nome'}
             </button>
           </div>
 
@@ -631,8 +711,13 @@ export default function Profile() {
 
       {/* Toast */}
       {toast && (
-        <div className="fixed bottom-6 right-6 bg-[#0B2D2A] text-white px-5 py-3.5 rounded-xl text-sm shadow-xl z-50 animate-fade-in">
-          ✓ {toast}
+        <div
+          role={toast.type === 'error' ? 'alert' : 'status'}
+          className={`fixed bottom-6 right-6 text-white px-5 py-3.5 rounded-xl text-sm shadow-xl z-50 animate-fade-in ${
+            toast.type === 'error' ? 'bg-red-600' : 'bg-[#0B2D2A]'
+          }`}
+        >
+          {toast.type === 'success' ? '✓ ' : toast.type === 'error' ? '✕ ' : ''}{toast.msg}
         </div>
       )}
     </div>
