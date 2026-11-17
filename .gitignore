@@ -33,3 +33,8 @@ vite.svg
 
 # TypeScript
 *.tsbuildinfo
+
+# Claude Code
+CLAUDE.md
+CLAUDE.local.md
+.claude/
